@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { evaluateVisibility, visibility } from "./visibility";
+import {
+  evaluateVisibility,
+  splitRepeatVisibility,
+  visibility,
+} from "./visibility";
 
 describe("evaluateVisibility", () => {
   describe("undefined / boolean", () => {
@@ -722,6 +726,56 @@ describe("visibility helper", () => {
     );
     expect(result).toEqual({
       $or: [{ $state: "/isAdmin" }, { $state: "/isModerator" }],
+    });
+  });
+});
+
+describe("splitRepeatVisibility", () => {
+  it("passes through pure container conditions", () => {
+    const cond = { $state: "/show", eq: true };
+    expect(splitRepeatVisibility(cond)).toEqual({
+      container: cond,
+      itemFilter: undefined,
+    });
+    expect(splitRepeatVisibility(undefined)).toEqual({
+      container: undefined,
+      itemFilter: undefined,
+    });
+    expect(splitRepeatVisibility(true)).toEqual({
+      container: true,
+      itemFilter: undefined,
+    });
+  });
+
+  it("routes pure item conditions to the item filter", () => {
+    const cond = { $item: "status", eq: "todo" };
+    expect(splitRepeatVisibility(cond)).toEqual({
+      container: undefined,
+      itemFilter: cond,
+    });
+  });
+
+  it("partitions AND-composed mixed conditions", () => {
+    const state = { $state: "/show", eq: true };
+    const item = { $item: "status", eq: "todo" };
+    for (const cond of [[state, item], { $and: [state, item] }]) {
+      expect(splitRepeatVisibility(cond as never)).toEqual({
+        container: { $and: [state] },
+        itemFilter: { $and: [item] },
+      });
+    }
+  });
+
+  it("keeps mixed $or entirely as an item filter", () => {
+    const cond = {
+      $or: [
+        { $state: "/all", eq: true },
+        { $item: "pinned", eq: true },
+      ],
+    };
+    expect(splitRepeatVisibility(cond)).toEqual({
+      container: undefined,
+      itemFilter: cond,
     });
   });
 });

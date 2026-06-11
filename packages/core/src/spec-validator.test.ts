@@ -147,7 +147,239 @@ describe("validateSpec", () => {
 // autoFixSpec
 // =============================================================================
 
+describe("repeat validation", () => {
+  it("rejects repeat without children", () => {
+    const result = validateSpec({
+      root: "list",
+      state: { items: [{ id: "1" }] },
+      elements: {
+        list: {
+          type: "Stack",
+          props: {},
+          repeat: { statePath: "/items" },
+          children: [],
+        },
+      },
+    });
+    expect(result.valid).toBe(false);
+    expect(
+      result.issues.some((i) => i.code === "repeat_without_children"),
+    ).toBe(true);
+  });
+
+  it("rejects repeat over a non-array state value", () => {
+    const result = validateSpec({
+      root: "list",
+      state: { items: { "1": { title: "x" } } },
+      elements: {
+        list: {
+          type: "Stack",
+          props: {},
+          repeat: { statePath: "/items" },
+          children: ["card"],
+        },
+        card: { type: "Text", props: {}, children: [] },
+      },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((i) => i.code === "repeat_state_mismatch")).toBe(
+      true,
+    );
+  });
+
+  it("rejects repeat over a missing state path when state is provided", () => {
+    const result = validateSpec({
+      root: "list",
+      state: { other: [] },
+      elements: {
+        list: {
+          type: "Stack",
+          props: {},
+          repeat: { statePath: "/items" },
+          children: ["card"],
+        },
+        card: { type: "Text", props: {}, children: [] },
+      },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((i) => i.code === "repeat_state_mismatch")).toBe(
+      true,
+    );
+  });
+
+  it("accepts a well-formed repeat and skips state checks when no state is provided", () => {
+    const withState = validateSpec({
+      root: "list",
+      state: { items: [{ id: "1" }] },
+      elements: {
+        list: {
+          type: "Stack",
+          props: {},
+          repeat: { statePath: "/items" },
+          children: ["card"],
+        },
+        card: { type: "Text", props: {}, children: [] },
+      },
+    });
+    expect(withState.valid).toBe(true);
+    const runtimeState = validateSpec({
+      root: "list",
+      elements: {
+        list: {
+          type: "Stack",
+          props: {},
+          repeat: { statePath: "/items" },
+          children: ["card"],
+        },
+        card: { type: "Text", props: {}, children: [] },
+      },
+    });
+    expect(runtimeState.valid).toBe(true);
+  });
+});
+
+describe("visible condition validation", () => {
+  const base = (visible: unknown): Spec => ({
+    root: "root",
+    elements: {
+      root: {
+        type: "Text",
+        props: { text: "hi" },
+        children: [],
+        visible: visible as Spec["elements"][string]["visible"],
+      },
+    },
+  });
+
+  it("accepts documented forms", () => {
+    for (const visible of [
+      true,
+      false,
+      { $state: "/tab", eq: "home" },
+      { $item: "status", eq: "todo" },
+      { $index: true, lt: 3 },
+      [
+        { $state: "/a", eq: 1 },
+        { $item: "b", neq: 2 },
+      ],
+      { $or: [{ $state: "/a", eq: 1 }, { $and: [{ $item: "b", not: true }] }] },
+    ]) {
+      expect(validateSpec(base(visible)).valid).toBe(true);
+    }
+  });
+
+  it("rejects conditions mixing $state and $item (silently hidden at runtime)", () => {
+    const result = validateSpec(
+      base([{ $state: "/tasks", $item: "status", eq: "todo" }]),
+    );
+    expect(result.valid).toBe(false);
+    expect(
+      result.issues.some((issue) => issue.code === "invalid_visible"),
+    ).toBe(true);
+  });
+
+  it("rejects unknown condition shapes", () => {
+    const result = validateSpec(base({ when: "/tasks", is: "todo" }));
+    expect(result.valid).toBe(false);
+    expect(result.issues[0]!.code).toBe("invalid_visible");
+  });
+});
+
 describe("autoFixSpec", () => {
+  it("prunes children references to undefined elements", () => {
+    const spec: Spec = {
+      root: "root",
+      elements: {
+        root: { type: "Card", props: {}, children: ["text", "ghost"] },
+        text: { type: "Text", props: { text: "hi" }, children: [] },
+      },
+    };
+    const { spec: fixed, fixes, fixDetails } = autoFixSpec(spec);
+    expect(fixed.elements.root!.children).toEqual(["text"]);
+    expect(fixes).toEqual([
+      'Removed reference to undefined element "ghost" from children of "root".',
+    ]);
+    expect(fixDetails).toEqual([
+      {
+        message:
+          'Removed reference to undefined element "ghost" from children of "root".',
+        lossy: true,
+      },
+    ]);
+    expect(validateSpec(fixed).valid).toBe(true);
+  });
+
+  it("leaves intact children untouched", () => {
+    const spec: Spec = {
+      root: "root",
+      elements: {
+        root: { type: "Card", props: {}, children: ["text"] },
+        text: { type: "Text", props: { text: "hi" }, children: [] },
+      },
+    };
+    const { spec: fixed, fixes } = autoFixSpec(spec);
+    expect(fixed.elements.root!.children).toEqual(["text"]);
+    expect(fixes).toEqual([]);
+  });
+
+  it("does not prune a repeat container down to zero children", () => {
+    const spec: Spec = {
+      root: "list",
+      state: { items: [{ id: "1" }] },
+      elements: {
+        list: {
+          type: "Stack",
+          props: {},
+          repeat: { statePath: "/items" },
+          children: ["ghost"],
+        },
+      },
+    };
+    const { spec: fixed, fixDetails } = autoFixSpec(spec);
+    expect(fixed.elements.list!.children).toEqual(["ghost"]);
+    expect(fixDetails).toEqual([]);
+    // The real problem (missing template) stays visible to the repair loop.
+    const result = validateSpec(fixed);
+    expect(result.valid).toBe(false);
+    expect(result.issues.some((i) => i.code === "missing_child")).toBe(true);
+  });
+
+  it("withholds lossy fixes when options.lossy is false", () => {
+    const spec: Spec = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Card",
+          props: { visible: true },
+          children: ["ghost"],
+        },
+      },
+    };
+    const { spec: fixed, fixDetails } = autoFixSpec(spec, { lossy: false });
+    expect(fixed.elements.root!.children).toEqual(["ghost"]);
+    expect(fixDetails.every((fix) => !fix.lossy)).toBe(true);
+    expect(fixDetails.length).toBeGreaterThan(0);
+  });
+
+  it("classifies field relocations as lossless", () => {
+    const { fixDetails } = autoFixSpec({
+      root: "root",
+      elements: {
+        root: {
+          type: "Text",
+          props: { text: "hi", visible: true },
+          children: [],
+        },
+      },
+    });
+    expect(fixDetails).toEqual([
+      {
+        message: 'Moved "visible" from props to element level on "root".',
+        lossy: false,
+      },
+    ]);
+  });
+
   it("moves visible from props to element level", () => {
     const spec: Spec = {
       root: "root",

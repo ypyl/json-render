@@ -70,6 +70,89 @@ export const VisibilityConditionSchema: z.ZodType<VisibilityCondition> = z.lazy(
     ]),
 );
 
+const StrictSingleConditionSchema = z.union([
+  z.strictObject({ $state: z.string(), ...comparisonOps }),
+  z.strictObject({ $item: z.string(), ...comparisonOps }),
+  z.strictObject({ $index: z.literal(true), ...comparisonOps }),
+]);
+
+/**
+ * Strict variant for spec validation: rejects unknown keys, so malformed
+ * conditions (e.g. mixing $state and $item in one object) are caught at
+ * validation time instead of silently evaluating to hidden at runtime.
+ */
+/**
+ * True when a condition references the repeat-item scope ($item or $index)
+ * anywhere in its tree. Renderers use this to apply a repeat container's own
+ * visible condition as a per-item filter instead of evaluating it (and
+ * failing) outside the repeat scope.
+ */
+export function conditionUsesItemScope(
+  condition: VisibilityCondition | undefined,
+): boolean {
+  if (condition === undefined || typeof condition === "boolean") return false;
+  if (Array.isArray(condition)) return condition.some(conditionUsesItemScope);
+  if (typeof condition !== "object" || condition === null) return false;
+  if ("$item" in condition || "$index" in condition) return true;
+  if ("$and" in condition)
+    return (condition as { $and: VisibilityCondition[] }).$and.some(
+      conditionUsesItemScope,
+    );
+  if ("$or" in condition)
+    return (condition as { $or: VisibilityCondition[] }).$or.some(
+      conditionUsesItemScope,
+    );
+  return false;
+}
+
+/**
+ * Splits a repeat container's visible condition into a container-level gate
+ * and a per-item filter. Top-level AND structures (arrays, $and) partition
+ * cleanly: conjuncts that reference $item/$index filter items, the rest gate
+ * the container. An $or that mixes scopes cannot be partitioned soundly and
+ * is applied entirely per item (state parts still evaluate correctly there;
+ * the container shell just cannot be hidden by it).
+ */
+export function splitRepeatVisibility(
+  condition: VisibilityCondition | undefined,
+): {
+  container: VisibilityCondition | undefined;
+  itemFilter: VisibilityCondition | undefined;
+} {
+  if (condition === undefined || !conditionUsesItemScope(condition)) {
+    return { container: condition, itemFilter: undefined };
+  }
+  const partition = (parts: VisibilityCondition[]) => {
+    const container = parts.filter((part) => !conditionUsesItemScope(part));
+    const item = parts.filter((part) => conditionUsesItemScope(part));
+    return {
+      container: container.length > 0 ? { $and: container } : undefined,
+      itemFilter: item.length > 0 ? { $and: item } : undefined,
+    };
+  };
+  if (Array.isArray(condition)) return partition(condition);
+  if (
+    typeof condition === "object" &&
+    condition !== null &&
+    "$and" in condition
+  ) {
+    return partition((condition as { $and: VisibilityCondition[] }).$and);
+  }
+  // Single item-scoped condition or an $or that mixes scopes.
+  return { container: undefined, itemFilter: condition };
+}
+
+export const VisibilityConditionStrictSchema: z.ZodType<VisibilityCondition> =
+  z.lazy(() =>
+    z.union([
+      z.boolean(),
+      StrictSingleConditionSchema,
+      z.array(StrictSingleConditionSchema),
+      z.strictObject({ $and: z.array(VisibilityConditionStrictSchema) }),
+      z.strictObject({ $or: z.array(VisibilityConditionStrictSchema) }),
+    ]),
+  );
+
 // =============================================================================
 // Context
 // =============================================================================

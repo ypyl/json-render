@@ -24,6 +24,7 @@ import {
   resolveElementProps,
   resolveBindings,
   resolveActionParam,
+  splitRepeatVisibility,
   evaluateVisibility,
   getByPath,
   isDevtoolsActive,
@@ -226,11 +227,22 @@ const ElementRenderer = React.memo(function ElementRenderer({
     return base;
   }, [ctx, repeatScope, functions, directives]);
 
+  // A repeat container whose own visible condition references $item/$index
+  // outside any repeat scope is (partly) a per-item filter: models and humans
+  // write {"repeat": ..., "visible": {"$item": "status", "eq": "todo"}} to
+  // mean a filtered list. AND-composed $state conjuncts still gate the
+  // container itself so a false gate hides the shell, not just the items.
+  const repeatVisibility =
+    element.repeat !== undefined && repeatScope == null
+      ? splitRepeatVisibility(element.visible)
+      : { container: element.visible, itemFilter: undefined };
+  const repeatItemFilter = repeatVisibility.itemFilter;
+
   // Evaluate visibility (now supports $item/$index inside repeat scopes)
   const isVisible =
-    element.visible === undefined
+    repeatVisibility.container === undefined
       ? true
-      : evaluateVisibility(element.visible, fullCtx);
+      : evaluateVisibility(repeatVisibility.container, fullCtx);
 
   // Create emit function that resolves events to action bindings.
   // Must be called before any early return to satisfy Rules of Hooks.
@@ -391,6 +403,7 @@ const ElementRenderer = React.memo(function ElementRenderer({
       registry={registry}
       loading={loading}
       fallback={fallback}
+      itemFilter={repeatItemFilter}
     />
   ) : (
     resolvedElement.children?.map((childKey) => {
@@ -459,22 +472,40 @@ function RepeatChildren({
   registry,
   loading,
   fallback,
+  itemFilter,
 }: {
   element: UIElement;
   spec: Spec;
   registry: ComponentRegistry;
   loading?: boolean;
   fallback?: ComponentRenderer;
+  itemFilter?: UIElement["visible"];
 }) {
   const { state } = useStateStore();
+  const { ctx } = useVisibility();
   const repeat = element.repeat!;
   const statePath = repeat.statePath;
 
   const items = (getByPath(state, statePath) as unknown[] | undefined) ?? [];
 
+  // Per-item filter from the container's own $item/$index visible condition.
+  // Original indices are preserved so item state paths still point at the
+  // right array entry.
+  const entries = items
+    .map((itemValue, index) => ({ itemValue, index }))
+    .filter(
+      ({ itemValue, index }) =>
+        itemFilter === undefined ||
+        evaluateVisibility(itemFilter, {
+          ...ctx,
+          repeatItem: itemValue,
+          repeatIndex: index,
+        }),
+    );
+
   return (
     <>
-      {items.map((itemValue, index) => {
+      {entries.map(({ itemValue, index }) => {
         // Use a stable key: prefer key field, fall back to index
         const key =
           repeat.key && typeof itemValue === "object" && itemValue !== null

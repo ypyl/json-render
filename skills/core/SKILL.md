@@ -176,7 +176,14 @@ Validate spec structure and auto-fix common issues:
 import { validateSpec, autoFixSpec } from "@json-render/core";
 
 const { valid, issues } = validateSpec(spec);
-const fixed = autoFixSpec(spec);
+// issues include: missing_child, invalid_visible (malformed conditions),
+// repeat_without_children, repeat_state_mismatch (statePath not an array in state)
+
+const { spec: fixed, fixDetails } = autoFixSpec(spec);
+// fixDetails entries are { message, lossy }. Lossless fixes relocate
+// misplaced fields; lossy fixes prune dangling children references.
+// In a repair loop, withhold lossy fixes until retries are exhausted:
+const attempt = autoFixSpec(spec, { lossy: retriesExhausted });
 ```
 
 ## Visibility Conditions
@@ -253,7 +260,7 @@ The `StateStore` interface: `get(path)`, `set(path, value)`, `update(updates)`, 
 | `diffToPatches` | Generate RFC 6902 JSON Patch operations from object diff |
 | `EditMode` | Type: `"patch" \| "merge" \| "diff"` |
 | `validateSpec` | Validate spec structure |
-| `autoFixSpec` | Auto-fix common spec issues |
+| `autoFixSpec` | Auto-fix common spec issues; classifies fixes lossy/lossless, `{ lossy: false }` withholds pruning |
 | `createSpecStreamCompiler` | Stream JSONL patches into spec |
 | `createJsonRenderTransform` | TransformStream separating text from JSONL in mixed streams |
 | `parseSpecStreamLine` | Parse single JSONL line |

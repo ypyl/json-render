@@ -1,4 +1,6 @@
 import type { Spec, UIElement } from "./types";
+import { getByPath } from "./types";
+import { VisibilityConditionStrictSchema } from "./visibility";
 
 // =============================================================================
 // Spec Structural Validation
@@ -24,6 +26,9 @@ export interface SpecIssue {
     | "missing_root"
     | "root_not_found"
     | "missing_child"
+    | "invalid_visible"
+    | "repeat_without_children"
+    | "repeat_state_mismatch"
     | "visible_in_props"
     | "orphaned_element"
     | "empty_spec"
@@ -122,6 +127,44 @@ export function validateSpec(
       }
     }
 
+    // 3b. Repeat containers that can never render anything. Both shapes pass
+    // schema validation but produce silently empty regions at runtime.
+    if (element.repeat !== undefined) {
+      if (!element.children || element.children.length === 0) {
+        issues.push({
+          severity: "error",
+          message: `Element "${key}" has "repeat" but no children. The repeated template must be a child element: add a child that renders one item (it may read fields with {"$item": "field"}).`,
+          elementKey: key,
+          code: "repeat_without_children",
+        });
+      }
+      if (spec.state !== undefined) {
+        const value = getByPath(spec.state, element.repeat.statePath);
+        if (!Array.isArray(value)) {
+          issues.push({
+            severity: "error",
+            message: `Element "${key}" repeats over "${element.repeat.statePath}" but state${value === undefined ? " has no value there" : ` has a ${typeof value} there`}. Repeat statePath must reference an array in state; add sample items to state at that path.`,
+            elementKey: key,
+            code: "repeat_state_mismatch",
+          });
+        }
+      }
+    }
+
+    // 3b. Malformed visible condition. Unrecognized shapes silently evaluate
+    // to hidden at runtime, so catch them here with a repairable message.
+    if (
+      element.visible !== undefined &&
+      !VisibilityConditionStrictSchema.safeParse(element.visible).success
+    ) {
+      issues.push({
+        severity: "error",
+        message: `Element "${key}" has an invalid "visible" condition: ${JSON.stringify(element.visible)}. Valid forms: true, false, {"$state":"/path","eq":value}, {"$item":"field","eq":value}, {"$index":true,"eq":n}, an array of those (AND), or {"$and":[...]} / {"$or":[...]}. Use exactly one of $state, $item, or $index per condition object.`,
+        elementKey: key,
+        code: "invalid_visible",
+      });
+    }
+
     // 3b. `visible` inside props
     const props = element.props as Record<string, unknown> | undefined;
     if (props && "visible" in props && props.visible !== undefined) {
@@ -209,11 +252,42 @@ export function validateSpec(
  *
  * Returns the fixed spec and a list of fixes applied.
  */
-export function autoFixSpec(spec: Spec): {
+export interface SpecFix {
+  message: string;
+  /**
+   * Lossy fixes change what renders (e.g. pruning a dangling child
+   * reference); lossless fixes only relocate misplaced fields. Callers with a
+   * repair loop should prefer re-prompting over accepting lossy fixes, and
+   * use the lossy-fixed spec as a last resort.
+   */
+  lossy: boolean;
+}
+
+export interface AutoFixOptions {
+  /**
+   * Apply lossy fixes (content pruning). Default true. Callers with a repair
+   * loop should pass false while retries remain so the model regenerates the
+   * missing content, then true as a last resort.
+   */
+  lossy?: boolean;
+}
+
+export function autoFixSpec(
+  spec: Spec,
+  options: AutoFixOptions = {},
+): {
   spec: Spec;
   fixes: string[];
+  /** Structured fix records; fixes is the plain-message projection. */
+  fixDetails: SpecFix[];
 } {
-  const fixes: string[] = [];
+  const applyLossy = options.lossy !== false;
+  const fixDetails: SpecFix[] = [];
+  const fixes = {
+    push(message: string, lossy = false) {
+      fixDetails.push({ message, lossy });
+    },
+  };
   const fixedElements: Record<string, UIElement> = {};
 
   for (const [key, element] of Object.entries(spec.elements)) {
@@ -277,9 +351,37 @@ export function autoFixSpec(spec: Spec): {
     fixedElements[key] = fixed;
   }
 
+  // Drop references to elements that were never defined. The renderer skips
+  // missing children at runtime, so pruning produces the same rendered output
+  // while letting the spec pass validation instead of hard-failing.
+  if (applyLossy)
+    for (const [key, element] of Object.entries(fixedElements)) {
+      if (!element.children || element.children.length === 0) continue;
+      const present = element.children.filter(
+        (child) => child in fixedElements,
+      );
+      if (present.length === element.children.length) continue;
+      if (element.repeat !== undefined && present.length === 0) {
+        // Pruning every child of a repeat container would only trade the
+        // missing_child error for repeat_without_children; keep the dangling
+        // reference so repair targets the real problem (the missing template).
+        continue;
+      }
+      for (const child of element.children) {
+        if (!(child in fixedElements)) {
+          fixes.push(
+            `Removed reference to undefined element "${child}" from children of "${key}".`,
+            true,
+          );
+        }
+      }
+      fixedElements[key] = { ...element, children: present };
+    }
+
   return {
     spec: { root: spec.root, elements: fixedElements, state: spec.state },
-    fixes,
+    fixes: fixDetails.map((fix) => fix.message),
+    fixDetails,
   };
 }
 

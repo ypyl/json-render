@@ -199,6 +199,24 @@ With comparison:
 
 This shows the divider for every item except the first (index 0).
 
+### Filtered lists — `$item` on the repeat container
+
+Putting an `$item` condition directly on the element that declares `repeat` filters which items render. This is the natural way to build kanban columns, tabbed lists, or status sections from one state array:
+
+```json
+{
+  "type": "Stack",
+  "repeat": { "statePath": "/tasks", "key": "id" },
+  "visible": { "$item": "status", "eq": "todo" },
+  "children": ["task-card"]
+}
+```
+
+One child renders per matching item; non-matching items are skipped. When the condition is an `$and` (or array) that mixes scopes, the `$state` parts gate the container itself (a false gate hides the whole shell) while the `$item`/`$index` parts filter items. A mixed `$or` cannot be split and is applied entirely per item.
+
+Filtered lists are currently implemented by the React renderer; other renderers evaluate the container condition outside the repeat scope.
+
+
 `$item` and `$index` conditions support the same comparison operators as `$state` (`eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `not`).
 
 ## Complex Example

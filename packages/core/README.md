@@ -230,7 +230,7 @@ Schema options:
 | Export | Purpose |
 |--------|---------|
 | `validateSpec(spec, options?)` | Validate spec structure and return issues |
-| `autoFixSpec(spec)` | Auto-fix common spec issues (returns corrected copy) |
+| `autoFixSpec(spec, options?)` | Auto-fix common spec issues; `fixDetails` classifies each fix as lossy or lossless, `{ lossy: false }` withholds pruning |
 | `formatSpecIssues(issues)` | Format validation issues as readable strings |
 
 ### Actions
@@ -553,7 +553,16 @@ const { valid, issues } = validateSpec(spec);
 console.log(formatSpecIssues(issues));
 
 // Auto-fix common issues (returns a corrected copy)
-const fixed = autoFixSpec(spec);
+const { spec: fixed, fixes, fixDetails } = autoFixSpec(spec);
+```
+
+`validateSpec` checks structure beyond the catalog schema: missing or dangling `children` references, malformed `visible` conditions (anything outside the documented forms evaluates to hidden at runtime, so it is rejected with code `invalid_visible`), `repeat` containers with no children (`repeat_without_children`), and `repeat.statePath` values that do not reference an array in the spec's own `state` (`repeat_state_mismatch`).
+
+`autoFixSpec` distinguishes lossless fixes (relocating `visible`/`on`/`repeat`/`watch` out of `props`) from lossy ones (pruning `children` references to elements that were never defined). Each entry in `fixDetails` carries `{ message, lossy }`. Callers with a repair loop should apply lossless fixes immediately and prefer re-prompting over lossy fixes, passing `{ lossy: false }` to withhold pruning until retries are exhausted:
+
+```typescript
+const lastAttempt = retriesUsed >= maxRetries;
+const { spec: fixed, fixDetails } = autoFixSpec(spec, { lossy: lastAttempt });
 ```
 
 ## State Watchers

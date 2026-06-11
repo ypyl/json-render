@@ -323,7 +323,9 @@ Any prop value can use data-driven expressions that resolve at render time. The 
 }
 ```
 
-For two-way binding, use `{ "$bindState": "/path" }` on the natural value prop (e.g. `value`, `checked`, `pressed`). Inside repeat scopes, use `{ "$bindItem": "field" }` instead. Components receive resolved `bindings` with the state path for each bound prop; use `useBoundProp(props.value, bindings?.value)` to get `[value, setValue]`.
+For two-way binding, use `{ "$bindState": "/path" }` on the natural value prop (e.g. `value`, `checked`, `pressed`). Inside repeat scopes, use `{ "$bindItem": "field" }` instead.
+
+To render a filtered list (kanban columns, status sections), put `repeat` and an `$item` visibility condition on the same container: `{ "repeat": { "statePath": "/tasks", "key": "id" }, "visible": { "$item": "status", "eq": "todo" }, "children": ["task-card"] }` renders one child per matching item. AND-composed `$state` conjuncts still gate the container itself. Components receive resolved `bindings` with the state path for each bound prop; use `useBoundProp(props.value, bindings?.value)` to get `[value, setValue]`.
 
 ### `$template` and `$computed`
 

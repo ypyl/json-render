@@ -67,6 +67,9 @@ export type { VisibilityContext } from "./visibility";
 
 export {
   VisibilityConditionSchema,
+  VisibilityConditionStrictSchema,
+  conditionUsesItemScope,
+  splitRepeatVisibility,
   evaluateVisibility,
   visibility,
 } from "./visibility";
